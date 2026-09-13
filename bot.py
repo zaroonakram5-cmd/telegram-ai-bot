@@ -12,6 +12,7 @@ Requires TELEGRAM_BOT_TOKEN and STORAGE_SECRET in your environment (see .env.exa
 import logging
 import os
 
+import httpx
 from dotenv import load_dotenv
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -22,6 +23,7 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 import storage
 from clients import dispatch
@@ -220,7 +222,16 @@ def main():
 
     storage.init_db()
 
-    app = Application.builder().token(token).build()
+    # Force IPv4: many mobile/carrier networks (common on Android/Termux)
+    # have broken or unroutable IPv6, which makes httpx hang trying the
+    # IPv6 address before falling back — this skips that entirely.
+    request = HTTPXRequest(
+        connect_timeout=30,
+        read_timeout=30,
+        httpx_kwargs={"transport": httpx.AsyncHTTPTransport(local_address="0.0.0.0")},
+    )
+
+    app = Application.builder().token(token).request(request).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("provider", provider_cmd))
     app.add_handler(CommandHandler("model", model_cmd))
@@ -235,3 +246,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+    

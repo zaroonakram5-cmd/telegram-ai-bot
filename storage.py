@@ -60,6 +60,17 @@ def init_db():
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS conversation_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            role TEXT,
+            text TEXT,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -176,3 +187,55 @@ def increment_free_trial_count(user_id: int):
     )
     conn.commit()
     conn.close()
+
+
+# Conversation memory. By default this is unlimited - the full
+# conversation gets resent as context on every message, which means cost
+# and response time both grow the longer a chat runs (check /usage).
+# Set HISTORY_WINDOW in your .env to a number to cap it instead (e.g. 40
+# keeps the last 40 messages and drops older ones).
+_window_env = os.environ.get("HISTORY_WINDOW", "").strip()
+HISTORY_WINDOW = int(_window_env) if _window_env else None
+
+
+def add_message(user_id: int, role: str, text: str):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO conversation_history (user_id, role, text) VALUES (?, ?, ?)",
+        (user_id, role, text),
+    )
+    if HISTORY_WINDOW is not None:
+        # Trim old messages beyond the window so the table (and prompt
+        # size) doesn't grow forever.
+        conn.execute(
+            """
+            DELETE FROM conversation_history
+            WHERE user_id = ? AND id NOT IN (
+                SELECT id FROM conversation_history
+                WHERE user_id = ?
+                ORDER BY id DESC LIMIT ?
+            )
+            """,
+            (user_id, user_id, HISTORY_WINDOW),
+        )
+    conn.commit()
+    conn.close()
+
+
+def get_history(user_id: int):
+    """Returns [{"role": ..., "text": ...}, ...] oldest first."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT role, text FROM conversation_history WHERE user_id = ? ORDER BY id ASC",
+        (user_id,),
+    ).fetchall()
+    conn.close()
+    return [{"role": role, "text": text} for role, text in rows]
+
+
+def clear_history(user_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM conversation_history WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    
